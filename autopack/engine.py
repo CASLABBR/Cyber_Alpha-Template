@@ -18,7 +18,7 @@ from typing import Iterable
 
 IGNORED = {".git", ".venv", "venv", "node_modules", "bin", "obj", "dist", "build"}
 KINDS = {"auto", "android", "dotnet", "python", "python-library", "rust", "go", "node",
-         "static-web", "docker", "docker-compose"}
+         "static-web", "pwa", "docker", "docker-compose"}
 
 
 def files(root: Path) -> Iterable[Path]:
@@ -136,6 +136,8 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
     compose = first_from(paths, ["compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml"])
     dockerfile = first_from(paths, ["Dockerfile"])
     html = first_from(paths, ["index.html"])
+    web_manifest = first_from(paths, ["manifest.webmanifest", "manifest.json"])
+    service_worker = first_from(paths, ["service-worker.js", "serviceworker.js", "sw.js"])
 
     python_entry = validate_relative_file(root, python_entry) if python_entry else ""
     if not python_entry:
@@ -160,6 +162,8 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
         candidates.append(("go", 92)); evidence.append(gomod)
     if package:
         candidates.append(("node", 82)); evidence.append(package)
+    if html and web_manifest and service_worker:
+        candidates.append(("pwa", 91)); evidence += [html, web_manifest, service_worker]
     if html and not package:
         candidates.append(("static-web", 88)); evidence.append(html)
     if compose:
@@ -181,7 +185,8 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
             "candidates": [{"kind": name, "confidence": score} for name, score in candidates],
             "evidence": sorted(set(evidence)), "python_entry": python_entry, "dotnet_project": csproj,
             "gradle_root": str(Path(gradlew).parent).replace("\\", "/") if gradlew else "",
-            "package_json": package, "compose_file": compose, "dockerfile": dockerfile, "index_html": html}
+            "package_json": package, "compose_file": compose, "dockerfile": dockerfile, "index_html": html,
+            "web_manifest": web_manifest, "service_worker": service_worker}
 
 
 def positive_build_number(raw: str) -> int:
@@ -253,4 +258,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
