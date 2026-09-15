@@ -159,6 +159,12 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
       - name: Obter projeto
         shell: pwsh
         env:
@@ -211,19 +217,12 @@ jobs:
           PRODUCT_NAME: ${{ needs.plan.outputs.product }}
           BUILD_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          $name = $env:PRODUCT_NAME
-          $version = $env:BUILD_VERSION
-          New-Item -ItemType Directory -Force package | Out-Null
-          Copy-Item "dist/$name.exe" package/
-          "@echo off`r`ncd /d `%~dp0`r`ncmd /k `"$name.exe --help`"" | Set-Content package/Abrir-Programa.cmd -Encoding ascii
-          "@echo off`r`ncd /d `%~dp0`r`n$name.exe %*`r`npause" | Set-Content package/Executar-com-Argumentos.cmd -Encoding ascii
-          Get-FileHash package/* -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content package/SHA256SUMS.txt
-          Compress-Archive package/* "$name-$version-Windows-Portable.zip"
+          & control/autopack/package-windows.ps1 -SourceDirectory dist -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -ApplicationType cli
 
       - name: Smoke test
         shell: pwsh
         run: |
-          $exe = Get-ChildItem package/*.exe | Select-Object -First 1
+          $exe = Get-ChildItem artifacts/*-Portable/*.exe | Select-Object -First 1
           & $exe.FullName --help
           if ($LASTEXITCODE -ne 0) { & $exe.FullName --version }
 
@@ -231,8 +230,7 @@ jobs:
         with:
           name: Windows-Portable-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
           path: |
-            package/**
-            *-Windows-Portable.zip
+            artifacts/**
           if-no-files-found: error
           retention-days: 30
 
@@ -242,6 +240,12 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
       - name: Obter projeto
         shell: pwsh
         env:
@@ -267,10 +271,17 @@ jobs:
             throw "Projeto .NET invalido ou fora do repositorio"
           }
           dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true "-p:Version=$($env:BUILD_VERSION)" -o package
+      - name: Criar pacote portatil
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          & control/autopack/package-windows.ps1 -SourceDirectory package -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -ApplicationType auto
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Windows-DotNet-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
-          path: package/**
+          path: artifacts/**
           if-no-files-found: error
           retention-days: 30
 
@@ -280,6 +291,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
       - name: Obter projeto
         shell: bash
         env:
@@ -310,12 +327,16 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
           ./gradlew bundleRelease --no-daemon || echo "AAB nao suportado por este projeto"
+      - name: Organizar APK, AAB e hashes
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: bash control/autopack/collect-android.sh source artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Android-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
-          path: |
-            source/**/build/outputs/apk/**/*.apk
-            source/**/build/outputs/bundle/**/*.aab
+          path: artifacts/**
           if-no-files-found: error
           retention-days: 30
 
@@ -325,6 +346,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
       - name: Obter projeto
         shell: bash
         env:
@@ -334,39 +361,18 @@ jobs:
           set -euo pipefail
           if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
           else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
-      - name: Construir imagem
-        if: needs.plan.outputs.kind == 'docker'
+      - name: Construir e empacotar Docker
         env:
           BUILD_VERSION: ${{ needs.plan.outputs.version }}
-          REPOSITORY_URL: ${{ inputs.repository_url }}
-        run: docker build --label "org.opencontainers.image.version=$BUILD_VERSION" --label "org.opencontainers.image.source=$REPOSITORY_URL" -t "autopack/application:$BUILD_VERSION" source
-      - name: Exportar imagem
-        if: needs.plan.outputs.kind == 'docker'
-        env:
-          BUILD_VERSION: ${{ needs.plan.outputs.version }}
-        run: docker save "autopack/application:$BUILD_VERSION" -o "AutoPack-Docker-$BUILD_VERSION.tar"
-      - name: Validar Compose
-        if: needs.plan.outputs.kind == 'docker-compose'
-        working-directory: source
-        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
           COMPOSE_FILE: ${{ needs.plan.outputs.compose_file }}
         shell: bash
         run: |
           set -euo pipefail
-          compose_path="$(realpath -m -- "$COMPOSE_FILE")"
-          source_dir="$(realpath -- .)"
-          [[ "$compose_path" == "$source_dir/"* && -f "$compose_path" ]] || {
-            echo "::error::Arquivo Compose invalido ou fora do repositorio"
-            exit 1
-          }
-          docker compose -f "$compose_path" config --quiet
+          bash control/autopack/package-docker.sh source artifacts "$PRODUCT_NAME" "$BUILD_VERSION" "$COMPOSE_FILE"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Docker-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
-          path: |
-            AutoPack-Docker-*.tar
-            source/*compose*.yml
-            source/*compose*.yaml
-          if-no-files-found: warn
+          path: artifacts/**
+          if-no-files-found: error
           retention-days: 30
-
