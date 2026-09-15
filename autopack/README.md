@@ -24,6 +24,9 @@ Esta é a fundação do v3. O workflow legado permanece disponível durante a va
 - `package-windows.ps1`: cria ZIP portátil, manifesto, hashes e iniciador adequado para CLI ou aplicação web. O conteúdo publicado/autocontido deve ser passado como origem; ele não instala dependências no computador do usuário.
 - `collect-android.sh`: coleta APKs e AABs produzidos pelo Gradle, aplica nomes contendo produto/versão/variante e gera SHA-256.
 - `package-docker.sh`: valida Compose ou constrói uma imagem OCI, exporta pacote offline compactado e cria iniciadores simples para Docker Desktop.
+- `package-node.sh`: inclui o projeto, dependências de produção, hashes e iniciadores para Windows/Linux.
+- `package-static.sh`: cria um site portátil em ZIP com abertura por duplo clique e verificação SHA-256.
+
+PWA é reconhecida quando existem HTML principal, manifesto web e service worker. O workflow executa o build quando houver `package.json` e entrega uma edição offline. Android TWA exige domínio HTTPS verificado e chave de assinatura; sem isso o AutoPack não inventa uma assinatura nem promete publicação na loja.
 
 Os scripts recusam saídas vazias. MSI/MSIX e APK/AAB assinados só devem ser anunciados quando o job possuir certificado/keystore em GitHub Secrets; sem credenciais, a saída é de teste ou portátil. A leitura de README serve para relatório e sugestão, nunca para executar comandos arbitrários.
-
