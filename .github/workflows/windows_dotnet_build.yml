@@ -1,0 +1,49 @@
+name: Windows .NET - EXE Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detectar projeto .NET
+        id: detect
+        shell: pwsh
+        run: |
+          $project = Get-ChildItem -Path . -Recurse -Filter *.csproj -File | Where-Object { $_.FullName -notmatch '[\\/](bin|obj)[\\/]' } | Select-Object -First 1
+          if ($project) {
+            "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "path=$($project.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Nenhum projeto .NET encontrado; build ignorado."
+          }
+
+      - name: Configurar .NET 8
+        if: steps.detect.outputs.found == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publicar EXE win-x64
+        if: steps.detect.outputs.found == 'true'
+        shell: pwsh
+        run: dotnet publish "${{ steps.detect.outputs.path }}" --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true --output build_output
+
+      - name: Publicar executável
+        if: steps.detect.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-win-x64-${{ github.sha }}
+          path: build_output/**
+          if-no-files-found: error
+          retention-days: 30
