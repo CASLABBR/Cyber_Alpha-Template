@@ -1,0 +1,626 @@
+name: AutoPack v4 Adaptive Factory
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: URL publica do repositorio GitHub
+        required: true
+        type: string
+      ref:
+        description: Branch, tag ou commit (vazio usa a padrao)
+        required: false
+        default: ''
+        type: string
+      project_type:
+        description: Tipo do projeto
+        required: true
+        default: auto
+        type: choice
+        options: [auto, python, dotnet, android, docker, docker-compose, node, static-web, pwa, hta, tauri]
+      mode:
+        description: Modo de processamento
+        required: true
+        default: automatico
+        type: choice
+        options: [analisar, rapido, automatico, completo]
+      python_entry:
+        description: Arquivo Python principal (opcional)
+        required: false
+        default: ''
+        type: string
+      targets:
+        description: Saidas separadas por virgula (auto,windows,android,docker,node,site,pwa,hta,tauri)
+        required: false
+        default: auto
+        type: string
+
+run-name: AutoPack v4 - ${{ inputs.repository_url }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autopack-v4-${{ inputs.repository_url }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      confidence: ${{ steps.plan.outputs.confidence }}
+      version: ${{ steps.plan.outputs.version }}
+      product: ${{ steps.plan.outputs.product }}
+      python_entry: ${{ steps.plan.outputs.python_entry }}
+      dotnet_project: ${{ steps.plan.outputs.dotnet_project }}
+      gradle_root: ${{ steps.plan.outputs.gradle_root }}
+      compose_file: ${{ steps.plan.outputs.compose_file }}
+      dockerfile: ${{ steps.plan.outputs.dockerfile }}
+      package_json: ${{ steps.plan.outputs.package_json }}
+      index_html: ${{ steps.plan.outputs.index_html }}
+      tauri_config: ${{ steps.plan.outputs.tauri_config }}
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Validar origem
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          AUTOPACK_TARGETS: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY_URL" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$ ]] || {
+            echo "::error::Informe uma URL publica de github.com/dono/repositorio"
+            exit 1
+          }
+          targets="$AUTOPACK_TARGETS"
+          [[ "$targets" =~ ^(auto|windows|android|docker|node|site|pwa|hta|tauri)(,(windows|android|docker|node|site|pwa|hta|tauri))*$ ]] || {
+            echo "::error::Targets invalidos. Use valores separados por virgula, sem espacos."
+            exit 1
+          }
+
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then
+            git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else
+            git clone --depth 1 -- "$REPOSITORY_URL" source
+          fi
+          size_mb=$(du -sm source | cut -f1)
+          [[ "$size_mb" -le 2048 ]] || { echo "::error::Repositorio excede 2 GB"; exit 1; }
+
+      - name: Detectar e planejar
+        env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          PROJECT_TYPE: ${{ inputs.project_type }}
+          PYTHON_ENTRY: ${{ inputs.python_entry }}
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u GITHUB_OUTPUT python control/autopack-v4/engine.py source \
+            --type "$PROJECT_TYPE" \
+            --python-entry "$PYTHON_ENTRY" \
+            --repository "$REPOSITORY_URL" \
+            --output autopack-plan.json
+
+      - name: Validar plano e publicar outputs
+        id: plan
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          import uuid
+          from pathlib import PurePosixPath
+
+          with open("autopack-plan.json", encoding="utf-8") as stream:
+              plan = json.load(stream)
+
+          detection = plan.get("detection", {})
+          values = {
+              "kind": detection.get("kind", ""),
+              "confidence": str(detection.get("confidence", "")),
+              "version": plan.get("version", ""),
+              "product": plan.get("product", ""),
+              "python_entry": detection.get("python_entry", ""),
+              "dotnet_project": detection.get("dotnet_project", ""),
+              "gradle_root": detection.get("gradle_root", ""),
+              "compose_file": detection.get("compose_file", ""),
+              "dockerfile": detection.get("dockerfile", ""),
+              "package_json": detection.get("package_json", ""),
+              "index_html": detection.get("index_html", ""),
+              "tauri_config": detection.get("tauri_config", ""),
+          }
+
+          allowed_kinds = {"python", "dotnet", "android", "docker", "docker-compose", "node", "static-web", "pwa", "hta", "tauri", "python-library", "rust", "go"}
+          if values["kind"] not in allowed_kinds:
+              raise SystemExit(f"Tipo de projeto invalido: {values['kind']!r}")
+          if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", values["product"]):
+              raise SystemExit("Nome de produto inseguro no plano")
+          if not re.fullmatch(r"\d+\.\d{2}\.\d{2}\.\d+", values["version"]):
+              raise SystemExit("Versao invalida no plano")
+          if not re.fullmatch(r"\d{1,3}", values["confidence"]):
+              raise SystemExit("Confianca invalida no plano")
+
+          for key in ("python_entry", "dotnet_project", "gradle_root", "compose_file", "dockerfile", "package_json", "index_html", "tauri_config"):
+              value = values[key]
+              path = PurePosixPath(value)
+              if value and (path.is_absolute() or ".." in path.parts or any(ord(char) < 32 for char in value)):
+                  raise SystemExit(f"Caminho inseguro no plano: {key}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  delimiter = f"AUTOPACK_{uuid.uuid4().hex}"
+                  output.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
+
+      - name: Publicar plano
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: AutoPack-Plan-${{ steps.plan.outputs.version }}
+          path: autopack-plan.json
+          retention-days: 30
+
+  python-windows:
+    needs: plan
+    if: needs.plan.outputs.kind == 'python' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'windows'))
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Obter projeto
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          if (Test-Path source/pyproject.toml) { python -m pip install ./source }
+          elseif (Test-Path source/requirements.txt) { python -m pip install -r source/requirements.txt }
+
+      - name: Compilar executavel
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          PYTHON_ENTRY: ${{ needs.plan.outputs.python_entry }}
+        run: |
+          $entry = [IO.Path]::GetFullPath((Join-Path "$PWD/source" $env:PYTHON_ENTRY))
+          $sourceRoot = [IO.Path]::GetFullPath("$PWD/source") + [IO.Path]::DirectorySeparatorChar
+          if (-not $entry.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $entry -PathType Leaf)) {
+            throw "Entrada Python invalida ou fora do repositorio"
+          }
+          if ($env:PYTHON_ENTRY.Replace('\\', '/') -eq 'yt_dlp/__main__.py' -and (Test-Path source/bundle/pyinstaller.py)) {
+            Push-Location source
+            python devscripts/install_deps.py --include-group pyinstaller
+            python devscripts/make_lazy_extractors.py
+            python -m bundle.pyinstaller --onefile --name $env:PRODUCT_NAME
+            Pop-Location
+            New-Item -ItemType Directory -Force dist | Out-Null
+            Copy-Item "source/dist/$($env:PRODUCT_NAME).exe" "dist/$($env:PRODUCT_NAME).exe"
+          } else {
+            pyinstaller --noconfirm --onefile --console --name $env:PRODUCT_NAME $entry
+          }
+
+      - name: Criar pacote portatil e iniciadores
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          & control/autopack-v4/package-windows.ps1 -SourceDirectory dist -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -ApplicationType cli
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem artifacts/*-Portable/*.exe | Select-Object -First 1
+          & $exe.FullName --help
+          if ($LASTEXITCODE -ne 0) { & $exe.FullName --version }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Windows-Portable-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: |
+            artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  dotnet-windows:
+    needs: plan
+    if: needs.plan.outputs.kind == 'dotnet' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'windows'))
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Obter projeto
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Publicar autocontido
+        shell: pwsh
+        env:
+          DOTNET_PROJECT: ${{ needs.plan.outputs.dotnet_project }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          $project = [IO.Path]::GetFullPath((Join-Path "$PWD/source" $env:DOTNET_PROJECT))
+          $sourceRoot = [IO.Path]::GetFullPath("$PWD/source") + [IO.Path]::DirectorySeparatorChar
+          if (-not $project.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $project -PathType Leaf)) {
+            throw "Projeto .NET invalido ou fora do repositorio"
+          }
+          dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true "-p:Version=$($env:BUILD_VERSION)" -o package
+      - name: Criar pacote portatil
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          & control/autopack-v4/package-windows.ps1 -SourceDirectory package -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -ApplicationType auto
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Windows-DotNet-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    needs: plan
+    if: needs.plan.outputs.kind == 'android' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'android'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compilar APK e tentar AAB
+        shell: bash
+        env:
+          GRADLE_ROOT: ${{ needs.plan.outputs.gradle_root }}
+        run: |
+          set -euo pipefail
+          gradle_dir="$(realpath -m -- "source/$GRADLE_ROOT")"
+          source_dir="$(realpath -- source)"
+          [[ "$gradle_dir" == "$source_dir" || "$gradle_dir" == "$source_dir/"* ]] || {
+            echo "::error::Raiz Gradle fora do repositorio"
+            exit 1
+          }
+          [[ -f "$gradle_dir/gradlew" ]] || { echo "::error::gradlew nao encontrado"; exit 1; }
+          cd "$gradle_dir"
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          ./gradlew bundleRelease --no-daemon || echo "AAB nao suportado por este projeto"
+      - name: Organizar APK, AAB e hashes
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: bash control/autopack-v4/collect-android.sh source artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Android-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  docker:
+    needs: plan
+    if: inputs.mode != 'analisar' && ((inputs.targets == 'auto' && (needs.plan.outputs.kind == 'docker' || needs.plan.outputs.kind == 'docker-compose')) || (contains(inputs.targets, 'docker') && (needs.plan.outputs.dockerfile != '' || needs.plan.outputs.compose_file != '')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - name: Construir e empacotar Docker
+        env:
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          COMPOSE_FILE: ${{ needs.plan.outputs.compose_file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash control/autopack-v4/package-docker.sh source artifacts "$PRODUCT_NAME" "$BUILD_VERSION" "$COMPOSE_FILE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Docker-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  node:
+    needs: plan
+    if: needs.plan.outputs.kind == 'node' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'node'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - name: Instalar, testar e construir
+        shell: bash
+        env:
+          PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+        run: |
+          set -euo pipefail
+          package_path="$(realpath -m -- "source/$PACKAGE_JSON")"
+          source_dir="$(realpath -- source)"
+          [[ "$package_path" == "$source_dir/"* && -f "$package_path" ]] || { echo "::error::package.json invalido"; exit 1; }
+          cd "$(dirname "$package_path")"
+          if [[ -f package-lock.json ]]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+          npm test --if-present
+          npm run build --if-present
+      - name: Empacotar aplicacao Node
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+        run: bash control/autopack-v4/package-node.sh "source/$(dirname "$PACKAGE_JSON")" artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Node-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  static-web:
+    needs: plan
+    if: needs.plan.outputs.kind == 'static-web' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'site'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+          true
+      - name: Empacotar site portatil
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          INDEX_HTML: ${{ needs.plan.outputs.index_html }}
+        run: |
+          set -euo pipefail
+          index_path="$(realpath -m -- "source/$INDEX_HTML")"
+          source_dir="$(realpath -- source)"
+          [[ "$index_path" == "$source_dir/"* && -f "$index_path" ]] || { echo "::error::index.html invalido"; exit 1; }
+          bash control/autopack-v4/package-static.sh "$(dirname "$index_path")" artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Site-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  pwa:
+    needs: plan
+    if: needs.plan.outputs.kind == 'pwa' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'pwa') || contains(inputs.targets, 'site'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - name: Construir PWA quando necessario
+        shell: bash
+        env:
+          PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PACKAGE_JSON" ]]; then
+            cd "source/$(dirname "$PACKAGE_JSON")"
+            if [[ -f package-lock.json ]]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+            npm run build --if-present
+          fi
+      - name: Empacotar PWA offline
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          INDEX_HTML: ${{ needs.plan.outputs.index_html }}
+        run: |
+          set -euo pipefail
+          root="source/$(dirname "$INDEX_HTML")"
+          for candidate in dist build out public; do
+            if [[ -f "$root/$candidate/index.html" ]]; then root="$root/$candidate"; break; fi
+          done
+          [[ -f "$root/index.html" ]] || { echo "::error::PWA construida sem index.html"; exit 1; }
+          bash control/autopack-v4/package-static.sh "$root" artifacts "$PRODUCT_NAME-PWA" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: PWA-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  hta:
+    needs: plan
+    if: inputs.mode != 'analisar' && (needs.plan.outputs.kind == 'hta' || contains(inputs.targets, 'hta')) && needs.plan.outputs.index_html != ''
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+      - name: Criar aplicativo HTA
+        shell: pwsh
+        env:
+          INDEX_HTML: ${{ needs.plan.outputs.index_html }}
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          $index = [IO.Path]::GetFullPath((Join-Path "$PWD/source" $env:INDEX_HTML))
+          $sourceRoot = [IO.Path]::GetFullPath("$PWD/source") + [IO.Path]::DirectorySeparatorChar
+          if (-not $index.StartsWith($sourceRoot,[StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path $index)) { throw 'index.html invalido' }
+          & control/autopack-v4/package-hta.ps1 -SourceDirectory (Split-Path $index) -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: HTA-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  tauri-windows:
+    needs: plan
+    if: needs.plan.outputs.kind == 'tauri' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'tauri') || contains(inputs.targets, 'windows'))
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Obter projeto
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+      - name: Preparar toolchains
+        shell: pwsh
+        run: |
+          rustup default stable
+          node --version
+          npm --version
+          rustc --version
+      - name: Instalar dependencias e compilar Tauri
+        shell: pwsh
+        env:
+          PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $project = if ($env:PACKAGE_JSON) { Split-Path (Join-Path "$PWD/source" $env:PACKAGE_JSON) } else { "$PWD/source" }
+          Push-Location $project
+          if (Test-Path package-lock.json) { npm ci } else { npm install }
+          npm run tauri build
+          Pop-Location
+      - name: Coletar EXE e instaladores Tauri
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Get-ChildItem source -Recurse -File | Where-Object {
+            $_.FullName -match '\\target\\release\\' -and ($_.Extension -in '.exe','.msi')
+          } | Copy-Item -Destination artifacts -Force
+          if (-not (Get-ChildItem artifacts -File)) { throw 'Tauri nao produziu EXE ou MSI.' }
+          Get-FileHash artifacts/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_.Path))" } | Set-Content artifacts/SHA256SUMS.txt -Encoding ascii
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Tauri-Windows-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
