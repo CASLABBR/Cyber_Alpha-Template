@@ -17,7 +17,7 @@ on:
         required: true
         default: auto
         type: choice
-        options: [auto, python, dotnet, android, docker, docker-compose, node, static-web]
+        options: [auto, python, dotnet, android, docker, docker-compose, node, static-web, pwa]
       mode:
         description: Modo de processamento
         required: true
@@ -129,7 +129,7 @@ jobs:
               "index_html": detection.get("index_html", ""),
           }
 
-          allowed_kinds = {"python", "dotnet", "android", "docker", "docker-compose", "node", "static-web", "python-library", "rust", "go"}
+          allowed_kinds = {"python", "dotnet", "android", "docker", "docker-compose", "node", "static-web", "pwa", "python-library", "rust", "go"}
           if values["kind"] not in allowed_kinds:
               raise SystemExit(f"Tipo de projeto invalido: {values['kind']!r}")
           if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", values["product"]):
@@ -464,6 +464,58 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Site-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  pwa:
+    needs: plan
+    if: needs.plan.outputs.kind == 'pwa' && inputs.mode != 'analisar'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - name: Construir PWA quando necessario
+        shell: bash
+        env:
+          PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PACKAGE_JSON" ]]; then
+            cd "source/$(dirname "$PACKAGE_JSON")"
+            if [[ -f package-lock.json ]]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+            npm run build --if-present
+          fi
+      - name: Empacotar PWA offline
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          INDEX_HTML: ${{ needs.plan.outputs.index_html }}
+        run: |
+          set -euo pipefail
+          root="source/$(dirname "$INDEX_HTML")"
+          for candidate in dist build out public; do
+            if [[ -f "$root/$candidate/index.html" ]]; then root="$root/$candidate"; break; fi
+          done
+          [[ -f "$root/index.html" ]] || { echo "::error::PWA construida sem index.html"; exit 1; }
+          bash control/autopack/package-static.sh "$root" artifacts "$PRODUCT_NAME-PWA" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: PWA-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
           path: artifacts/**
           if-no-files-found: error
           retention-days: 30
