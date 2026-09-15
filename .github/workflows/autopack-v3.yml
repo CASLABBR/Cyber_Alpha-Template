@@ -193,7 +193,17 @@ jobs:
           if (-not $entry.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $entry -PathType Leaf)) {
             throw "Entrada Python invalida ou fora do repositorio"
           }
-          pyinstaller --noconfirm --onefile --console --name $env:PRODUCT_NAME -- $entry
+          if ($env:PYTHON_ENTRY.Replace('\\', '/') -eq 'yt_dlp/__main__.py' -and (Test-Path source/bundle/pyinstaller.py)) {
+            Push-Location source
+            python devscripts/install_deps.py --include-group pyinstaller
+            python devscripts/make_lazy_extractors.py
+            python -m bundle.pyinstaller --onefile --name $env:PRODUCT_NAME
+            Pop-Location
+            New-Item -ItemType Directory -Force dist | Out-Null
+            Copy-Item "source/dist/$($env:PRODUCT_NAME).exe" "dist/$($env:PRODUCT_NAME).exe"
+          } else {
+            pyinstaller --noconfirm --onefile --console --name $env:PRODUCT_NAME $entry
+          }
 
       - name: Criar pacote portatil e iniciadores
         shell: pwsh
