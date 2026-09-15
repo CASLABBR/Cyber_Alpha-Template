@@ -163,7 +163,11 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
     if html and not package:
         candidates.append(("static-web", 88)); evidence.append(html)
     if compose:
-        candidates.append(("docker-compose", 97)); evidence.append(compose)
+        # A root Compose file normally defines the product. Nested Compose
+        # files are commonly development helpers and must not override a
+        # detectable native application.
+        compose_score = 97 if "/" not in compose else 60
+        candidates.append(("docker-compose", compose_score)); evidence.append(compose)
     elif dockerfile:
         # Docker is usually an additional distribution option. When a native
         # application is detectable, package that application as the primary
