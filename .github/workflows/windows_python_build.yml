@@ -1,0 +1,57 @@
+name: Windows Python - EXE Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detectar aplicação Python
+        id: detect
+        shell: pwsh
+        run: |
+          $entry = @("main.py", "app.py", "run.py") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($entry) {
+            "found=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "entry=$entry" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "found=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Host "Nenhum main.py, app.py ou run.py encontrado; build ignorado."
+          }
+
+      - name: Configurar Python 3.11
+        if: steps.detect.outputs.found == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        if: steps.detect.outputs.found == 'true'
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path requirements.txt) { python -m pip install -r requirements.txt }
+          python -m pip install pyinstaller
+
+      - name: Gerar EXE
+        if: steps.detect.outputs.found == 'true'
+        shell: pwsh
+        run: pyinstaller --onefile --noconsole "${{ steps.detect.outputs.entry }}" --name App
+
+      - name: Publicar executável
+        if: steps.detect.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-windows-${{ github.sha }}
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30
