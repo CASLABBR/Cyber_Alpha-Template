@@ -165,7 +165,10 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
     if compose:
         candidates.append(("docker-compose", 97)); evidence.append(compose)
     elif dockerfile:
-        candidates.append(("docker", 92)); evidence.append(dockerfile)
+        # Docker is usually an additional distribution option. When a native
+        # application is detectable, package that application as the primary
+        # result and keep Docker as a secondary compatible target.
+        candidates.append(("docker", 65)); evidence.append(dockerfile)
 
     candidates.sort(key=lambda item: (-item[1], item[0]))
     kind = requested if requested != "auto" else (candidates[0][0] if candidates else "unknown")
