@@ -599,12 +599,23 @@ jobs:
         shell: pwsh
         env:
           PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+          TAURI_CONFIG: ${{ needs.plan.outputs.tauri_config }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $project = if ($env:PACKAGE_JSON) { Split-Path (Join-Path "$PWD/source" $env:PACKAGE_JSON) } else { "$PWD/source" }
+          $repoRoot = [IO.Path]::GetFullPath("$PWD/source")
+          $project = if ($env:PACKAGE_JSON) { Split-Path (Join-Path $repoRoot $env:PACKAGE_JSON) } else { $repoRoot }
+          $configPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $env:TAURI_CONFIG))
           Push-Location $project
           if (Test-Path package-lock.json) { npm ci } else { npm install }
-          npm run tauri build
+          $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+          $legacy = $null -ne $config.PSObject.Properties['tauri'] -or $null -ne $config.PSObject.Properties['package']
+          if ($legacy) {
+            Write-Host 'Configuracao Tauri v1 detectada; usando CLI compativel.'
+            npm install --no-save '@tauri-apps/cli@1'
+            npx tauri build
+          } else {
+            npm run tauri build
+          }
           Pop-Location
       - name: Coletar EXE e instaladores Tauri
         shell: pwsh
