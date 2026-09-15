@@ -595,6 +595,7 @@ jobs:
           node --version
           npm --version
           rustc --version
+          npm install --global pnpm@10
       - name: Instalar dependencias e compilar Tauri
         shell: pwsh
         env:
