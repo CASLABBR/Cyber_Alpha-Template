@@ -1,0 +1,178 @@
+name: Central de Compilacao - APK ou EXE
+on:
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: URL publica do repositorio GitHub
+        required: true
+        type: string
+      ref:
+        description: Branch, tag ou commit (vazio usa a padrao)
+        required: false
+        default: ''
+        type: string
+      build_type:
+        description: Tipo de projeto
+        required: true
+        default: auto
+        type: choice
+        options: [auto, android, dotnet, python]
+      python_entry:
+        description: Arquivo Python de entrada opcional
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+run-name: Compilar ${{ inputs.repository_url }} como ${{ inputs.build_type }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-22.04
+    outputs:
+      build_type: ${{ steps.detect.outputs.build_type }}
+      android_root: ${{ steps.detect.outputs.android_root }}
+      dotnet_project: ${{ steps.detect.outputs.dotnet_project }}
+      python_entry: ${{ steps.detect.outputs.python_entry }}
+    steps:
+      - name: Validar e baixar codigo
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REPOSITORY_URL" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$ ]]; then
+            echo "::error::Use uma URL publica no formato https://github.com/dono/repositorio"
+            exit 1
+          fi
+          if [[ -n "$SOURCE_REF" ]]; then
+            git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else
+            git clone --depth 1 -- "$REPOSITORY_URL" source
+          fi
+
+      - name: Detectar projeto
+        id: detect
+        shell: bash
+        env:
+          REQUESTED_TYPE: ${{ inputs.build_type }}
+          REQUESTED_ENTRY: ${{ inputs.python_entry }}
+        run: |
+          set -euo pipefail
+          android_root=""
+          [[ -f source/gradlew ]] && android_root="."
+          [[ -f source/android/gradlew ]] && android_root="android"
+          dotnet_project="$(find source -type f -name '*.csproj' -not -path '*/bin/*' -not -path '*/obj/*' | head -n 1 || true)"
+          dotnet_project="${dotnet_project#source/}"
+          python_entry="$REQUESTED_ENTRY"
+          if [[ -z "$python_entry" ]]; then
+            for candidate in main.py app.py run.py yt_dlp/__main__.py; do
+              [[ -f "source/$candidate" ]] && python_entry="$candidate" && break
+            done
+          fi
+          build_type="$REQUESTED_TYPE"
+          if [[ "$build_type" == auto ]]; then
+            if [[ -n "$android_root" ]]; then build_type=android
+            elif [[ -n "$dotnet_project" ]]; then build_type=dotnet
+            elif [[ -n "$python_entry" ]]; then build_type=python
+            else echo "::error::Tipo nao detectado. Escolha o tipo e informe a entrada Python."; exit 1
+            fi
+          fi
+          if [[ "$build_type" == android && -z "$android_root" ]]; then echo "::error::gradlew nao encontrado"; exit 1; fi
+          if [[ "$build_type" == dotnet && -z "$dotnet_project" ]]; then echo "::error::.csproj nao encontrado"; exit 1; fi
+          if [[ "$build_type" == python && ( -z "$python_entry" || ! -f "source/$python_entry" ) ]]; then echo "::error::Entrada Python nao encontrada"; exit 1; fi
+          echo "build_type=$build_type" >> "$GITHUB_OUTPUT"
+          echo "android_root=$android_root" >> "$GITHUB_OUTPUT"
+          echo "dotnet_project=$dotnet_project" >> "$GITHUB_OUTPUT"
+          echo "python_entry=$python_entry" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: detect
+    if: needs.detect.outputs.build_type == 'android'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Baixar codigo
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compilar APK
+        working-directory: source/${{ needs.detect.outputs.android_root }}
+        shell: bash
+        run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+      - name: Download do APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: APK-${{ github.run_number }}
+          path: source/**/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+  dotnet:
+    needs: detect
+    if: needs.detect.outputs.build_type == 'dotnet'
+    runs-on: windows-2022
+    steps:
+      - name: Baixar codigo
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Compilar EXE
+        shell: pwsh
+        run: dotnet publish "source/${{ needs.detect.outputs.dotnet_project }}" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o output
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EXE-DotNet-${{ github.run_number }}
+          path: output/**
+          if-no-files-found: error
+          retention-days: 30
+
+  python:
+    needs: detect
+    if: needs.detect.outputs.build_type == 'python'
+    runs-on: windows-2022
+    steps:
+      - name: Baixar codigo
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Instalar projeto
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          if (Test-Path source/pyproject.toml) { python -m pip install ./source }
+          elseif (Test-Path source/requirements.txt) { python -m pip install -r source/requirements.txt }
+      - name: Gerar EXE
+        shell: pwsh
+        run: pyinstaller --onefile --console --name App --collect-all yt_dlp "source/${{ needs.detect.outputs.python_entry }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EXE-Python-${{ github.run_number }}
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30
