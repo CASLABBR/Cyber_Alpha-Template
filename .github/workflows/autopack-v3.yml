@@ -1,0 +1,362 @@
+name: AutoPack v3 Ultimate
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: URL publica do repositorio GitHub
+        required: true
+        type: string
+      ref:
+        description: Branch, tag ou commit (vazio usa a padrao)
+        required: false
+        default: ''
+        type: string
+      project_type:
+        description: Tipo do projeto
+        required: true
+        default: auto
+        type: choice
+        options: [auto, python, dotnet, android, docker, docker-compose, node, static-web]
+      mode:
+        description: Modo de processamento
+        required: true
+        default: automatico
+        type: choice
+        options: [analisar, rapido, automatico, completo]
+      python_entry:
+        description: Arquivo Python principal (opcional)
+        required: false
+        default: ''
+        type: string
+
+run-name: AutoPack v3 - ${{ inputs.repository_url }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autopack-v3-${{ inputs.repository_url }}-${{ inputs.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      confidence: ${{ steps.plan.outputs.confidence }}
+      version: ${{ steps.plan.outputs.version }}
+      product: ${{ steps.plan.outputs.product }}
+      python_entry: ${{ steps.plan.outputs.python_entry }}
+      dotnet_project: ${{ steps.plan.outputs.dotnet_project }}
+      gradle_root: ${{ steps.plan.outputs.gradle_root }}
+      compose_file: ${{ steps.plan.outputs.compose_file }}
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+
+      - name: Validar origem
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY_URL" =~ ^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(\.git)?/?$ ]] || {
+            echo "::error::Informe uma URL publica de github.com/dono/repositorio"
+            exit 1
+          }
+
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then
+            git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else
+            git clone --depth 1 -- "$REPOSITORY_URL" source
+          fi
+          size_mb=$(du -sm source | cut -f1)
+          [[ "$size_mb" -le 2048 ]] || { echo "::error::Repositorio excede 2 GB"; exit 1; }
+
+      - name: Detectar e planejar
+        env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          PROJECT_TYPE: ${{ inputs.project_type }}
+          PYTHON_ENTRY: ${{ inputs.python_entry }}
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u GITHUB_OUTPUT python control/autopack/engine.py source \
+            --type "$PROJECT_TYPE" \
+            --python-entry "$PYTHON_ENTRY" \
+            --repository "$REPOSITORY_URL" \
+            --output autopack-plan.json
+
+      - name: Validar plano e publicar outputs
+        id: plan
+        shell: python
+        run: |
+          import json
+          import os
+          import re
+          import uuid
+          from pathlib import PurePosixPath
+
+          with open("autopack-plan.json", encoding="utf-8") as stream:
+              plan = json.load(stream)
+
+          detection = plan.get("detection", {})
+          values = {
+              "kind": detection.get("kind", ""),
+              "confidence": str(detection.get("confidence", "")),
+              "version": plan.get("version", ""),
+              "product": plan.get("product", ""),
+              "python_entry": detection.get("python_entry", ""),
+              "dotnet_project": detection.get("dotnet_project", ""),
+              "gradle_root": detection.get("gradle_root", ""),
+              "compose_file": detection.get("compose_file", ""),
+          }
+
+          allowed_kinds = {"python", "dotnet", "android", "docker", "docker-compose", "node", "static-web", "python-library", "rust", "go"}
+          if values["kind"] not in allowed_kinds:
+              raise SystemExit(f"Tipo de projeto invalido: {values['kind']!r}")
+          if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", values["product"]):
+              raise SystemExit("Nome de produto inseguro no plano")
+          if not re.fullmatch(r"\d+\.\d{2}\.\d{2}\.\d+", values["version"]):
+              raise SystemExit("Versao invalida no plano")
+          if not re.fullmatch(r"\d{1,3}", values["confidence"]):
+              raise SystemExit("Confianca invalida no plano")
+
+          for key in ("python_entry", "dotnet_project", "gradle_root", "compose_file"):
+              value = values[key]
+              path = PurePosixPath(value)
+              if value and (path.is_absolute() or ".." in path.parts or any(ord(char) < 32 for char in value)):
+                  raise SystemExit(f"Caminho inseguro no plano: {key}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  delimiter = f"AUTOPACK_{uuid.uuid4().hex}"
+                  output.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
+
+      - name: Publicar plano
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: AutoPack-Plan-${{ steps.plan.outputs.version }}
+          path: autopack-plan.json
+          retention-days: 30
+
+  python-windows:
+    needs: plan
+    if: needs.plan.outputs.kind == 'python' && inputs.mode != 'analisar'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Obter projeto
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          if (Test-Path source/pyproject.toml) { python -m pip install ./source }
+          elseif (Test-Path source/requirements.txt) { python -m pip install -r source/requirements.txt }
+
+      - name: Compilar executavel
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          PYTHON_ENTRY: ${{ needs.plan.outputs.python_entry }}
+        run: |
+          $entry = [IO.Path]::GetFullPath((Join-Path "$PWD/source" $env:PYTHON_ENTRY))
+          $sourceRoot = [IO.Path]::GetFullPath("$PWD/source") + [IO.Path]::DirectorySeparatorChar
+          if (-not $entry.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $entry -PathType Leaf)) {
+            throw "Entrada Python invalida ou fora do repositorio"
+          }
+          pyinstaller --noconfirm --onefile --console --name $env:PRODUCT_NAME -- $entry
+
+      - name: Criar pacote portatil e iniciadores
+        shell: pwsh
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          $name = $env:PRODUCT_NAME
+          $version = $env:BUILD_VERSION
+          New-Item -ItemType Directory -Force package | Out-Null
+          Copy-Item "dist/$name.exe" package/
+          "@echo off`r`ncd /d `%~dp0`r`ncmd /k `"$name.exe --help`"" | Set-Content package/Abrir-Programa.cmd -Encoding ascii
+          "@echo off`r`ncd /d `%~dp0`r`n$name.exe %*`r`npause" | Set-Content package/Executar-com-Argumentos.cmd -Encoding ascii
+          Get-FileHash package/* -Algorithm SHA256 | Format-Table -AutoSize | Out-String | Set-Content package/SHA256SUMS.txt
+          Compress-Archive package/* "$name-$version-Windows-Portable.zip"
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem package/*.exe | Select-Object -First 1
+          & $exe.FullName --help
+          if ($LASTEXITCODE -ne 0) { & $exe.FullName --version }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Windows-Portable-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: |
+            package/**
+            *-Windows-Portable.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  dotnet-windows:
+    needs: plan
+    if: needs.plan.outputs.kind == 'dotnet' && inputs.mode != 'analisar'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: Obter projeto
+        shell: pwsh
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
+          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 8.0.x
+      - name: Publicar autocontido
+        shell: pwsh
+        env:
+          DOTNET_PROJECT: ${{ needs.plan.outputs.dotnet_project }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          $project = [IO.Path]::GetFullPath((Join-Path "$PWD/source" $env:DOTNET_PROJECT))
+          $sourceRoot = [IO.Path]::GetFullPath("$PWD/source") + [IO.Path]::DirectorySeparatorChar
+          if (-not $project.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $project -PathType Leaf)) {
+            throw "Projeto .NET invalido ou fora do repositorio"
+          }
+          dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true "-p:Version=$($env:BUILD_VERSION)" -o package
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Windows-DotNet-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: package/**
+          if-no-files-found: error
+          retention-days: 30
+
+  android:
+    needs: plan
+    if: needs.plan.outputs.kind == 'android' && inputs.mode != 'analisar'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Compilar APK e tentar AAB
+        shell: bash
+        env:
+          GRADLE_ROOT: ${{ needs.plan.outputs.gradle_root }}
+        run: |
+          set -euo pipefail
+          gradle_dir="$(realpath -m -- "source/$GRADLE_ROOT")"
+          source_dir="$(realpath -- source)"
+          [[ "$gradle_dir" == "$source_dir" || "$gradle_dir" == "$source_dir/"* ]] || {
+            echo "::error::Raiz Gradle fora do repositorio"
+            exit 1
+          }
+          [[ -f "$gradle_dir/gradlew" ]] || { echo "::error::gradlew nao encontrado"; exit 1; }
+          cd "$gradle_dir"
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          ./gradlew bundleRelease --no-daemon || echo "AAB nao suportado por este projeto"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Android-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: |
+            source/**/build/outputs/apk/**/*.apk
+            source/**/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
+          retention-days: 30
+
+  docker:
+    needs: plan
+    if: (needs.plan.outputs.kind == 'docker' || needs.plan.outputs.kind == 'docker-compose') && inputs.mode != 'analisar'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - name: Construir imagem
+        if: needs.plan.outputs.kind == 'docker'
+        env:
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+        run: docker build --label "org.opencontainers.image.version=$BUILD_VERSION" --label "org.opencontainers.image.source=$REPOSITORY_URL" -t "autopack/application:$BUILD_VERSION" source
+      - name: Exportar imagem
+        if: needs.plan.outputs.kind == 'docker'
+        env:
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: docker save "autopack/application:$BUILD_VERSION" -o "AutoPack-Docker-$BUILD_VERSION.tar"
+      - name: Validar Compose
+        if: needs.plan.outputs.kind == 'docker-compose'
+        working-directory: source
+        env:
+          COMPOSE_FILE: ${{ needs.plan.outputs.compose_file }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          compose_path="$(realpath -m -- "$COMPOSE_FILE")"
+          source_dir="$(realpath -- .)"
+          [[ "$compose_path" == "$source_dir/"* && -f "$compose_path" ]] || {
+            echo "::error::Arquivo Compose invalido ou fora do repositorio"
+            exit 1
+          }
+          docker compose -f "$compose_path" config --quiet
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Docker-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: |
+            AutoPack-Docker-*.tar
+            source/*compose*.yml
+            source/*compose*.yaml
+          if-no-files-found: warn
+          retention-days: 30
+
