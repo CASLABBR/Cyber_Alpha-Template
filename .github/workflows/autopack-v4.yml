@@ -603,19 +603,36 @@ jobs:
           TAURI_CONFIG: ${{ needs.plan.outputs.tauri_config }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $repoRoot = [IO.Path]::GetFullPath("$PWD/source")
           $project = if ($env:PACKAGE_JSON) { Split-Path (Join-Path $repoRoot $env:PACKAGE_JSON) } else { $repoRoot }
           $configPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $env:TAURI_CONFIG))
           Push-Location $project
-          if (Test-Path package-lock.json) { npm ci } else { npm install }
+          if (Test-Path pnpm-lock.yaml) {
+            pnpm install --frozen-lockfile
+            $manager = 'pnpm'
+          } elseif (Test-Path yarn.lock) {
+            corepack enable
+            yarn install --immutable
+            $manager = 'yarn'
+          } elseif (Test-Path package-lock.json) {
+            npm ci
+            $manager = 'npm'
+          } else {
+            npm install
+            $manager = 'npm'
+          }
           $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
           $legacy = $null -ne $config.PSObject.Properties['tauri'] -or $null -ne $config.PSObject.Properties['package']
           if ($legacy) {
             Write-Host 'Configuracao Tauri v1 detectada; usando CLI compativel.'
-            npm install --no-save '@tauri-apps/cli@1'
-            npx tauri build
+            if ($manager -eq 'pnpm') { pnpm dlx '@tauri-apps/cli@1' build }
+            elseif ($manager -eq 'yarn') { yarn dlx '@tauri-apps/cli@1' build }
+            else { npx --yes '@tauri-apps/cli@1' build }
           } else {
-            npm run tauri build
+            if ($manager -eq 'pnpm') { pnpm exec tauri build }
+            elseif ($manager -eq 'yarn') { yarn tauri build }
+            else { npm exec -- tauri build }
           }
           Pop-Location
       - name: Coletar EXE e instaladores Tauri
