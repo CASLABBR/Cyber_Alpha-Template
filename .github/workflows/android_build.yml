@@ -1,0 +1,56 @@
+name: Android - APK Build
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detectar projeto Android
+        id: detect
+        shell: bash
+        run: |
+          if [[ -f "gradlew" ]]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "root=." >> "$GITHUB_OUTPUT"
+          elif [[ -f "android/gradlew" ]]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "root=android" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Nenhum projeto Android encontrado; build ignorado."
+          fi
+
+      - name: Configurar Java 17
+        if: steps.detect.outputs.found == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Compilar APK de release
+        if: steps.detect.outputs.found == 'true'
+        working-directory: ${{ steps.detect.outputs.root }}
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Publicar APK
+        if: steps.detect.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-${{ github.sha }}
+          path: '**/build/outputs/apk/release/*.apk'
+          if-no-files-found: error
+          retention-days: 30
