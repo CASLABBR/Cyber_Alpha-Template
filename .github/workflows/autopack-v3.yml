@@ -52,6 +52,8 @@ jobs:
       dotnet_project: ${{ steps.plan.outputs.dotnet_project }}
       gradle_root: ${{ steps.plan.outputs.gradle_root }}
       compose_file: ${{ steps.plan.outputs.compose_file }}
+      package_json: ${{ steps.plan.outputs.package_json }}
+      index_html: ${{ steps.plan.outputs.index_html }}
     steps:
       - name: Obter motor AutoPack
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -123,6 +125,8 @@ jobs:
               "dotnet_project": detection.get("dotnet_project", ""),
               "gradle_root": detection.get("gradle_root", ""),
               "compose_file": detection.get("compose_file", ""),
+              "package_json": detection.get("package_json", ""),
+              "index_html": detection.get("index_html", ""),
           }
 
           allowed_kinds = {"python", "dotnet", "android", "docker", "docker-compose", "node", "static-web", "python-library", "rust", "go"}
@@ -135,7 +139,7 @@ jobs:
           if not re.fullmatch(r"\d{1,3}", values["confidence"]):
               raise SystemExit("Confianca invalida no plano")
 
-          for key in ("python_entry", "dotnet_project", "gradle_root", "compose_file"):
+          for key in ("python_entry", "dotnet_project", "gradle_root", "compose_file", "package_json", "index_html"):
               value = values[key]
               path = PurePosixPath(value)
               if value and (path.is_absolute() or ".." in path.parts or any(ord(char) < 32 for char in value)):
@@ -373,6 +377,93 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Docker-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  node:
+    needs: plan
+    if: needs.plan.outputs.kind == 'node' && inputs.mode != 'analisar'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+      - name: Instalar, testar e construir
+        shell: bash
+        env:
+          PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+        run: |
+          set -euo pipefail
+          package_path="$(realpath -m -- "source/$PACKAGE_JSON")"
+          source_dir="$(realpath -- source)"
+          [[ "$package_path" == "$source_dir/"* && -f "$package_path" ]] || { echo "::error::package.json invalido"; exit 1; }
+          cd "$(dirname "$package_path")"
+          if [[ -f package-lock.json ]]; then npm ci --ignore-scripts; else npm install --ignore-scripts; fi
+          npm test --if-present
+          npm run build --if-present
+      - name: Empacotar aplicacao Node
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
+        run: bash control/autopack/package-node.sh "source/$(dirname "$PACKAGE_JSON")" artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Node-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  static-web:
+    needs: plan
+    if: needs.plan.outputs.kind == 'static-web' && inputs.mode != 'analisar'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+          true
+      - name: Empacotar site portatil
+        shell: bash
+        env:
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+          INDEX_HTML: ${{ needs.plan.outputs.index_html }}
+        run: |
+          set -euo pipefail
+          index_path="$(realpath -m -- "source/$INDEX_HTML")"
+          source_dir="$(realpath -- source)"
+          [[ "$index_path" == "$source_dir/"* && -f "$index_path" ]] || { echo "::error::index.html invalido"; exit 1; }
+          bash control/autopack/package-static.sh "$(dirname "$index_path")" artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Site-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
           path: artifacts/**
           if-no-files-found: error
           retention-days: 30
