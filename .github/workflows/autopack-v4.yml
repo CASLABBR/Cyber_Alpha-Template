@@ -600,13 +600,13 @@ jobs:
         shell: pwsh
         env:
           PACKAGE_JSON: ${{ needs.plan.outputs.package_json }}
-          TAURI_CONFIG: ${{ needs.plan.outputs.tauri_config }}
+          AUTOPACK_TAURI_CONFIG_PATH: ${{ needs.plan.outputs.tauri_config }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
           $repoRoot = [IO.Path]::GetFullPath("$PWD/source")
           $project = if ($env:PACKAGE_JSON) { Split-Path (Join-Path $repoRoot $env:PACKAGE_JSON) } else { $repoRoot }
-          $configPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $env:TAURI_CONFIG))
+          $configPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $env:AUTOPACK_TAURI_CONFIG_PATH))
           Push-Location $project
           if (Test-Path pnpm-lock.yaml) {
             pnpm install --frozen-lockfile
