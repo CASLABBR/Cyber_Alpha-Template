@@ -70,3 +70,27 @@ jobs:
       - name: Testar geracao MSI no PowerShell moderno
         shell: pwsh
         run: ./autopack-v4/tests/test_package_msi.ps1
+
+  msi-lifecycle:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Instalar WiX real
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          if ($LASTEXITCODE -ne 0) { throw 'WiX installation failed.' }
+          Join-Path $env:USERPROFILE '.dotnet\tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Instalar, executar, atualizar, reparar e remover MSI
+        shell: powershell
+        run: ./autopack-v4/tests/test_msi_lifecycle.ps1
+      - name: Preservar MSI, checksums e logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: MSI-lifecycle-${{ github.run_id }}
+          path: msi-test-results/
+          if-no-files-found: warn
