@@ -34,7 +34,7 @@ try {
     Assert ((Get-Content "$installed/assets/version.txt" -Raw).Trim() -eq $version) 'Installed payload version mismatch'
     Assert (Test-Path -LiteralPath $shortcut) 'Start Menu shortcut missing'
     $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
-    Assert ($link.TargetPath -eq "$installed/app.exe") "Shortcut target mismatch: $($link.TargetPath); expected $installed/app.exe"
+    Assert ($link.TargetPath -eq (Join-Path $installed 'app.exe')) "Shortcut target mismatch: $($link.TargetPath); expected $installed/app.exe"
     Assert ((Get-ItemProperty -LiteralPath $registry).Installed -eq 1) 'Install registry marker missing'
   }
   Remove-Item -LiteralPath "$installed/app.exe" -Force
