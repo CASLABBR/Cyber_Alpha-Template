@@ -5,7 +5,10 @@ import unittest
 from pathlib import Path
 
 
-ENGINE = Path(__file__).parents[1] / "autopack" / "engine.py"
+ROOT = Path(__file__).parents[1]
+ENGINE = ROOT / "autopack" / "engine.py"
+if not ENGINE.is_file():
+    ENGINE = ROOT / "engine.py"
 SPEC = importlib.util.spec_from_file_location("autopack_engine", ENGINE)
 engine = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
@@ -109,6 +112,46 @@ class EngineTests(unittest.TestCase):
             (tauri / "tauri.conf.json").write_text("{}", encoding="utf-8")
             result = engine.detect(root, "auto", "")
             self.assertEqual(result["kind"], "tauri")
+
+    def test_chrome_extension_manifest_v3(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "manifest.json").write_text(json.dumps({
+                "manifest_version": 3, "name": "Example", "version": "1.0.0",
+                "action": {"default_title": "Example"}
+            }), encoding="utf-8")
+            result = engine.detect(root, "auto", "")
+            self.assertEqual(result["kind"], "chrome-extension")
+            self.assertEqual(result["extension_manifest"], "manifest.json")
+
+    def test_plain_web_manifest_is_not_chrome_extension(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "index.html").write_text("<html></html>", encoding="utf-8")
+            (root / "manifest.json").write_text(json.dumps({"name": "PWA"}), encoding="utf-8")
+            result = engine.detect(root, "auto", "")
+            self.assertNotEqual(result["kind"], "chrome-extension")
+
+    def test_node_mcp_server_detection(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "package.json").write_text(json.dumps({
+                "name": "example-mcp",
+                "dependencies": {"@modelcontextprotocol/sdk": "^1.0.0"}
+            }), encoding="utf-8")
+            result = engine.detect(root, "auto", "")
+            self.assertEqual(result["kind"], "mcp")
+
+    def test_codex_plugin_detection(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = root / ".codex-plugin"
+            manifest.mkdir()
+            (manifest / "plugin.json").write_text(json.dumps({
+                "name": "example", "version": "1.0.0"
+            }), encoding="utf-8")
+            result = engine.detect(root, "auto", "")
+            self.assertEqual(result["kind"], "plugin")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ O formato inicial é `AAAA.MM.DD.BUILD`. Projetos que já tenham SemVer poderão
 
 ## Estado
 
-Esta é a fundação do v3. O workflow legado permanece disponível durante a validação. Os adaptadores serão promovidos para produção apenas depois de smoke tests reais.
+O v4 está ativo em paralelo ao v3. PWA, HTA e Tauri foram validados em execuções reais. O Tauri produziu executável portátil, MSI e instalador NSIS. Recursos do catálogo só são marcados como concluídos quando possuem implementação, teste e evidência.
 
 ## Empacotadores disponíveis
 
@@ -31,6 +31,8 @@ PWA é reconhecida quando existem HTML principal, manifesto web e service worker
 
 - `package-hta.ps1`: cria uma edição HTA para HTML compatível, mantendo o site e avisando sobre o motor legado do Windows.
 - Tauri: detectado por configuração Tauri + Cargo; o job Windows executa o build oficial e coleta EXE/MSI com hashes.
+
+O CI em `.github/workflows/autopack-v4-ci.yml` testa o motor, valida a sintaxe dos scripts Bash e analisa todos os scripts PowerShell a cada alteração.
 
 Consulte `docs/DOSSIE-AUTOPACK.md` e `docs/CATALOGO-600-MELHORIAS.md` para arquitetura, comandos, decisões e backlog.
 

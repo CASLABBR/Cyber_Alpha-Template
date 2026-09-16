@@ -1,0 +1,40 @@
+{
+  "schema": "https://caslabbr.github.io/autopack/plan/v4",
+  "engine": "AutoPack v4",
+  "product": "Cyber_Alpha-Template",
+  "version": "2026.09.15.0",
+  "build_number": 0,
+  "created_at": "2026-09-15T04:46:06.980040+00:00",
+  "source": {
+    "repository": "https://github.com/CASLABBR/Cyber_Alpha-Template",
+    "commit": "unknown",
+    "branch": "unknown",
+    "tag": "unknown"
+  },
+  "detection": {
+    "kind": "unknown",
+    "confidence": 0,
+    "candidates": [],
+    "evidence": [],
+    "python_entry": "",
+    "dotnet_project": "",
+    "gradle_root": "",
+    "package_json": "",
+    "compose_file": "",
+    "dockerfile": "",
+    "index_html": "",
+    "web_manifest": "",
+    "service_worker": "",
+    "tauri_config": "",
+    "extension_manifest": "",
+    "mcp_manifest": "",
+    "plugin_manifest": ""
+  },
+  "outputs": [
+    "report",
+    "checksums"
+  ],
+  "warnings": [
+    "Low detection confidence; explicit configuration is recommended."
+  ]
+}

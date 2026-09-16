@@ -17,7 +17,7 @@ on:
         required: true
         default: auto
         type: choice
-        options: [auto, python, dotnet, android, docker, docker-compose, node, static-web, pwa, hta, tauri]
+        options: [auto, python, dotnet, android, docker, docker-compose, node, static-web, pwa, hta, tauri, chrome-extension, mcp, plugin]
       mode:
         description: Modo de processamento
         required: true
@@ -30,7 +30,7 @@ on:
         default: ''
         type: string
       targets:
-        description: Saidas separadas por virgula (auto,windows,android,docker,node,site,pwa,hta,tauri)
+        description: Saidas separadas por virgula (auto,windows,android,docker,node,site,pwa,hta,tauri,extension,mcp,plugin)
         required: false
         default: auto
         type: string
@@ -61,6 +61,10 @@ jobs:
       package_json: ${{ steps.plan.outputs.package_json }}
       index_html: ${{ steps.plan.outputs.index_html }}
       tauri_config: ${{ steps.plan.outputs.tauri_config }}
+      source_commit: ${{ steps.plan.outputs.source_commit }}
+      extension_manifest: ${{ steps.plan.outputs.extension_manifest }}
+      mcp_manifest: ${{ steps.plan.outputs.mcp_manifest }}
+      plugin_manifest: ${{ steps.plan.outputs.plugin_manifest }}
     steps:
       - name: Obter motor AutoPack
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -80,7 +84,7 @@ jobs:
             exit 1
           }
           targets="$AUTOPACK_TARGETS"
-          [[ "$targets" =~ ^(auto|windows|android|docker|node|site|pwa|hta|tauri)(,(windows|android|docker|node|site|pwa|hta|tauri))*$ ]] || {
+          [[ "$targets" =~ ^(auto|windows|android|docker|node|site|pwa|hta|tauri|extension|mcp|plugin)(,(windows|android|docker|node|site|pwa|hta|tauri|extension|mcp|plugin))*$ ]] || {
             echo "::error::Targets invalidos. Use valores separados por virgula, sem espacos."
             exit 1
           }
@@ -92,11 +96,14 @@ jobs:
           SOURCE_REF: ${{ inputs.ref }}
         run: |
           set -euo pipefail
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
           if [[ -n "$SOURCE_REF" ]]; then
-            git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
+            git -C source fetch --depth 1 origin "$SOURCE_REF"
           else
-            git clone --depth 1 -- "$REPOSITORY_URL" source
+            git -C source fetch --depth 1 origin HEAD
           fi
+          git -C source checkout --detach FETCH_HEAD
           size_mb=$(du -sm source | cut -f1)
           [[ "$size_mb" -le 2048 ]] || { echo "::error::Repositorio excede 2 GB"; exit 1; }
 
@@ -142,9 +149,13 @@ jobs:
               "package_json": detection.get("package_json", ""),
               "index_html": detection.get("index_html", ""),
               "tauri_config": detection.get("tauri_config", ""),
+              "source_commit": plan.get("source", {}).get("commit", ""),
+              "extension_manifest": detection.get("extension_manifest", ""),
+              "mcp_manifest": detection.get("mcp_manifest", ""),
+              "plugin_manifest": detection.get("plugin_manifest", ""),
           }
 
-          allowed_kinds = {"python", "dotnet", "android", "docker", "docker-compose", "node", "static-web", "pwa", "hta", "tauri", "python-library", "rust", "go"}
+          allowed_kinds = {"python", "dotnet", "android", "docker", "docker-compose", "node", "static-web", "pwa", "hta", "tauri", "chrome-extension", "mcp", "plugin", "python-library", "rust", "go"}
           if values["kind"] not in allowed_kinds:
               raise SystemExit(f"Tipo de projeto invalido: {values['kind']!r}")
           if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", values["product"]):
@@ -153,8 +164,10 @@ jobs:
               raise SystemExit("Versao invalida no plano")
           if not re.fullmatch(r"\d{1,3}", values["confidence"]):
               raise SystemExit("Confianca invalida no plano")
+          if not re.fullmatch(r"[0-9a-fA-F]{40}", values["source_commit"]):
+              raise SystemExit("Commit de origem invalido no plano")
 
-          for key in ("python_entry", "dotnet_project", "gradle_root", "compose_file", "dockerfile", "package_json", "index_html", "tauri_config"):
+          for key in ("python_entry", "dotnet_project", "gradle_root", "compose_file", "dockerfile", "package_json", "index_html", "tauri_config", "extension_manifest", "mcp_manifest", "plugin_manifest"):
               value = values[key]
               path = PurePosixPath(value)
               if value and (path.is_absolute() or ".." in path.parts or any(ord(char) < 32 for char in value)):
@@ -188,12 +201,15 @@ jobs:
         shell: pwsh
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
-          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+          git init source
+          git -C source remote add origin $env:REPOSITORY_URL
+          git -C source fetch --depth 1 origin $env:SOURCE_COMMIT
+          git -C source checkout --detach FETCH_HEAD
+          if ((git -C source rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Commit obtido difere do plano.' }
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -269,12 +285,15 @@ jobs:
         shell: pwsh
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
-          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+          git init source
+          git -C source remote add origin $env:REPOSITORY_URL
+          git -C source fetch --depth 1 origin $env:SOURCE_COMMIT
+          git -C source checkout --detach FETCH_HEAD
+          if ((git -C source rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Commit obtido difere do plano.' }
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 8.0.x
@@ -320,11 +339,14 @@ jobs:
         shell: bash
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           set -euo pipefail
-          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
-          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
       - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6
         with:
           distribution: temurin
@@ -375,11 +397,14 @@ jobs:
         shell: bash
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           set -euo pipefail
-          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
-          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
       - name: Construir e empacotar Docker
         env:
           BUILD_VERSION: ${{ needs.plan.outputs.version }}
@@ -411,11 +436,14 @@ jobs:
         shell: bash
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           set -euo pipefail
-          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
-          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
       - name: Instalar, testar e construir
         shell: bash
         env:
@@ -458,11 +486,14 @@ jobs:
         shell: bash
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           set -euo pipefail
-          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
-          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
           true
       - name: Empacotar site portatil
         shell: bash
@@ -498,11 +529,14 @@ jobs:
         shell: bash
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           set -euo pipefail
-          if [[ -n "$SOURCE_REF" ]]; then git clone --depth 1 --branch "$SOURCE_REF" -- "$REPOSITORY_URL" source
-          else git clone --depth 1 -- "$REPOSITORY_URL" source; fi
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
       - name: Construir PWA quando necessario
         shell: bash
         env:
@@ -550,11 +584,15 @@ jobs:
         shell: pwsh
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
-          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+          $PSNativeCommandUseErrorActionPreference = $true
+          git init source
+          git -C source remote add origin $env:REPOSITORY_URL
+          git -C source fetch --depth 1 origin $env:SOURCE_COMMIT
+          git -C source checkout --detach FETCH_HEAD
+          if ((git -C source rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Commit obtido difere do plano.' }
       - name: Criar aplicativo HTA
         shell: pwsh
         env:
@@ -583,11 +621,15 @@ jobs:
         shell: pwsh
         env:
           REPOSITORY_URL: ${{ inputs.repository_url }}
-          SOURCE_REF: ${{ inputs.ref }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:SOURCE_REF) { git clone --depth 1 --branch "$env:SOURCE_REF" -- "$env:REPOSITORY_URL" source }
-          else { git clone --depth 1 -- "$env:REPOSITORY_URL" source }
+          $PSNativeCommandUseErrorActionPreference = $true
+          git init source
+          git -C source remote add origin $env:REPOSITORY_URL
+          git -C source fetch --depth 1 origin $env:SOURCE_COMMIT
+          git -C source checkout --detach FETCH_HEAD
+          if ((git -C source rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw 'Commit obtido difere do plano.' }
       - name: Preparar toolchains
         shell: pwsh
         run: |
@@ -642,9 +684,22 @@ jobs:
           BUILD_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          Get-ChildItem source -Recurse -File | Where-Object {
-            $_.FullName -match '\\target\\release\\' -and ($_.Extension -in '.exe','.msi')
-          } | Copy-Item -Destination artifacts -Force
+          $releaseRoots = Get-ChildItem source -Recurse -Directory | Where-Object {
+            $_.FullName -match '\\src-tauri\\target\\release$'
+          }
+          foreach ($release in $releaseRoots) {
+            Get-ChildItem $release.FullName -File -Filter *.exe |
+              Where-Object { $_.Name -notmatch '^(build-script-|deps$)' } |
+              Copy-Item -Destination artifacts -Force
+            foreach ($bundleType in 'msi','nsis') {
+              $bundlePath = Join-Path $release.FullName "bundle/$bundleType"
+              if (Test-Path $bundlePath) {
+                Get-ChildItem $bundlePath -File | Where-Object {
+                  $_.Extension -in '.exe','.msi'
+                } | Copy-Item -Destination artifacts -Force
+              }
+            }
+          }
           if (-not (Get-ChildItem artifacts -File)) { throw 'Tauri nao produziu EXE ou MSI.' }
           Get-FileHash artifacts/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($_.Path))" } | Set-Content artifacts/SHA256SUMS.txt -Encoding ascii
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -653,3 +708,183 @@ jobs:
           path: artifacts/**
           if-no-files-found: error
           retention-days: 30
+
+  chrome-extension:
+    needs: plan
+    if: needs.plan.outputs.kind == 'chrome-extension' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'extension'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
+      - name: Validar e empacotar extensao
+        shell: bash
+        env:
+          EXTENSION_MANIFEST: ${{ needs.plan.outputs.extension_manifest }}
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifest="source/$EXTENSION_MANIFEST"
+          [[ -f "$manifest" ]] || { echo "::error::Manifesto da extensao nao encontrado"; exit 1; }
+          python control/autopack-v4/package-extension.py "$(dirname "$manifest")" artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Chrome-Extension-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  mcp-bundle:
+    needs: plan
+    if: needs.plan.outputs.kind == 'mcp' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'mcp'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto no commit planejado
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
+      - name: Empacotar servidor MCP
+        shell: bash
+        env:
+          MCP_MANIFEST: ${{ needs.plan.outputs.mcp_manifest }}
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifest="source/$MCP_MANIFEST"
+          [[ -f "$manifest" ]] || { echo "::error::Manifesto MCP nao encontrado"; exit 1; }
+          python control/autopack-v4/package-bundle.py mcp "$(dirname "$manifest")" artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: MCP-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  codex-plugin:
+    needs: plan
+    if: needs.plan.outputs.kind == 'plugin' && inputs.mode != 'analisar' && (inputs.targets == 'auto' || contains(inputs.targets, 'plugin'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Obter motor AutoPack
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: control
+          persist-credentials: false
+      - name: Obter projeto no commit planejado
+        shell: bash
+        env:
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          git init source
+          git -C source remote add origin "$REPOSITORY_URL"
+          git -C source fetch --depth 1 origin "$SOURCE_COMMIT"
+          git -C source checkout --detach FETCH_HEAD
+          [[ "$(git -C source rev-parse HEAD)" == "$SOURCE_COMMIT" ]] || { echo '::error::Commit obtido difere do plano'; exit 1; }
+      - name: Empacotar plugin Codex
+        shell: bash
+        env:
+          PLUGIN_MANIFEST: ${{ needs.plan.outputs.plugin_manifest }}
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifest="source/$PLUGIN_MANIFEST"
+          [[ -f "$manifest" ]] || { echo "::error::Manifesto do plugin nao encontrado"; exit 1; }
+          plugin_root="$(dirname "$(dirname "$manifest")")"
+          python control/autopack-v4/package-bundle.py plugin "$plugin_root" artifacts "$PRODUCT_NAME" "$BUILD_VERSION"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Codex-Plugin-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 30
+
+  report:
+    needs: [plan, python-windows, dotnet-windows, android, docker, node, static-web, pwa, hta, tauri-windows, chrome-extension, mcp-bundle, codex-plugin]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Gerar relatorio final rastreavel
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          REPOSITORY_URL: ${{ inputs.repository_url }}
+          REQUESTED_REF: ${{ inputs.ref }}
+          REQUESTED_TARGETS: ${{ inputs.targets }}
+          REQUESTED_MODE: ${{ inputs.mode }}
+          SOURCE_COMMIT: ${{ needs.plan.outputs.source_commit }}
+          DETECTED_KIND: ${{ needs.plan.outputs.kind }}
+          PRODUCT_NAME: ${{ needs.plan.outputs.product }}
+          BUILD_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p report
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          jobs = {name: data.get('result', 'unknown') for name, data in sorted(needs.items())}
+          failed = sorted(name for name, result in jobs.items() if result in {'failure', 'cancelled'})
+          report = {
+              'schema': 'autopack.report.v1',
+              'source': {
+                  'repository': os.environ['REPOSITORY_URL'],
+                  'requested_ref': os.environ['REQUESTED_REF'],
+                  'commit': os.environ['SOURCE_COMMIT'],
+              },
+              'request': {'mode': os.environ['REQUESTED_MODE'], 'targets': os.environ['REQUESTED_TARGETS']},
+              'detection': {'kind': os.environ['DETECTED_KIND'], 'product': os.environ['PRODUCT_NAME'], 'version': os.environ['BUILD_VERSION']},
+              'jobs': jobs,
+              'success': not failed and jobs.get('plan') == 'success',
+              'failed_jobs': failed,
+          }
+          Path('report/autopack-report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+          lines = ['# AutoPack v4 - relatorio final', '', f"- Origem: `{report['source']['repository']}`", f"- Commit: `{report['source']['commit']}`", f"- Tipo: `{report['detection']['kind']}`", f"- Produto/versao: `{report['detection']['product']} {report['detection']['version']}`", '', '## Jobs', '']
+          lines.extend(f"- `{name}`: **{result}**" for name, result in jobs.items())
+          Path('report/README.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          sha256sum report/* > report/SHA256SUMS.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: AutoPack-Report-${{ github.run_number }}
+          path: report/**
+          if-no-files-found: error
+          retention-days: 90

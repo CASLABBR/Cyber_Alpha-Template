@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AutoPack v3: conservative project detector and build-plan generator."""
+"""AutoPack v4: conservative project detector and build-plan generator."""
 
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ from typing import Iterable
 
 IGNORED = {".git", ".venv", "venv", "node_modules", "bin", "obj", "dist", "build"}
 KINDS = {"auto", "android", "dotnet", "python", "python-library", "rust", "go", "node",
-         "static-web", "pwa", "hta", "tauri", "docker", "docker-compose"}
+         "static-web", "pwa", "hta", "tauri", "docker", "docker-compose",
+         "chrome-extension", "mcp", "plugin"}
 
 
 def files(root: Path) -> Iterable[Path]:
@@ -139,6 +140,37 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
     web_manifest = first_from(paths, ["manifest.webmanifest", "manifest.json"])
     service_worker = first_from(paths, ["service-worker.js", "serviceworker.js", "sw.js"])
     tauri_config = first_from(paths, ["tauri.conf.json", "tauri.conf.json5", "Tauri.toml"])
+    plugin_manifest = first_from(paths, ["plugin.json"])
+    extension_manifest = ""
+    mcp_manifest = ""
+
+    for manifest_path in sorted(
+        (p for p in paths if Path(p).name.lower() == "manifest.json"),
+        key=lambda p: (p.count("/"), p.lower()),
+    ):
+        manifest_data = _load_json(root / manifest_path)
+        if manifest_data.get("manifest_version") in {2, 3} and manifest_data.get("name"):
+            extension_manifest = manifest_path
+            break
+
+    if package:
+        package_data = _load_json(root / package)
+        dependencies = {
+            **(package_data.get("dependencies") or {}),
+            **(package_data.get("devDependencies") or {}),
+        }
+        scripts = package_data.get("scripts") or {}
+        if "@modelcontextprotocol/sdk" in dependencies or any("mcp" in str(v).lower() for v in scripts.values()):
+            mcp_manifest = package
+    if not mcp_manifest:
+        pyproject = first_from(paths, ["pyproject.toml"])
+        if pyproject:
+            try:
+                pyproject_text = (root / pyproject).read_text(encoding="utf-8").lower()
+                if re.search(r"(^|[^a-z])mcp([^a-z]|$)|modelcontextprotocol", pyproject_text):
+                    mcp_manifest = pyproject
+            except (OSError, UnicodeError):
+                pass
 
     python_entry = validate_relative_file(root, python_entry) if python_entry else ""
     if not python_entry:
@@ -165,6 +197,12 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
         candidates.append(("node", 82)); evidence.append(package)
     if tauri_config and cargo:
         candidates.append(("tauri", 99)); evidence += [tauri_config, cargo]
+    if extension_manifest:
+        candidates.append(("chrome-extension", 99)); evidence.append(extension_manifest)
+    if mcp_manifest:
+        candidates.append(("mcp", 97)); evidence.append(mcp_manifest)
+    if plugin_manifest and ".codex-plugin/" in plugin_manifest.lower():
+        candidates.append(("plugin", 99)); evidence.append(plugin_manifest)
     if html and web_manifest and service_worker:
         candidates.append(("pwa", 91)); evidence += [html, web_manifest, service_worker]
     if html and not package:
@@ -190,7 +228,8 @@ def detect(root: Path, requested: str, python_entry: str) -> dict:
             "gradle_root": str(Path(gradlew).parent).replace("\\", "/") if gradlew else "",
             "package_json": package, "compose_file": compose, "dockerfile": dockerfile, "index_html": html,
             "web_manifest": web_manifest, "service_worker": service_worker,
-            "tauri_config": tauri_config}
+            "tauri_config": tauri_config, "extension_manifest": extension_manifest,
+            "mcp_manifest": mcp_manifest, "plugin_manifest": plugin_manifest}
 
 
 def positive_build_number(raw: str) -> int:
@@ -232,7 +271,7 @@ def main() -> int:
     # Repository name remains the fallback, but a declared package/product name is authoritative.
     product = metadata["name"] if metadata["name"] != safe_name(root.name) else safe_name(repo_name)
     plan = {
-        "schema": "https://caslabbr.github.io/autopack/plan/v3", "engine": "AutoPack v3",
+        "schema": "https://caslabbr.github.io/autopack/plan/v4", "engine": "AutoPack v4",
         "product": product, "version": version, "source_version": metadata["source_version"],
         "build_number": build_number, "created_at": now.isoformat(),
         "source": {"repository": args.repository, "commit": git_value(root, "rev-parse", "HEAD"),
@@ -243,6 +282,9 @@ def main() -> int:
     if result["kind"] in {"python", "dotnet"}: plan["outputs"] += ["windows-portable", "windows-msi"]
     if result["kind"] == "android": plan["outputs"] += ["apk", "aab"]
     if result["kind"] in {"docker", "docker-compose"}: plan["outputs"] += ["docker-image", "docker-portable"]
+    if result["kind"] == "chrome-extension": plan["outputs"] += ["chrome-extension-zip"]
+    if result["kind"] == "mcp": plan["outputs"] += ["mcp-bundle", "launcher", "config-example"]
+    if result["kind"] == "plugin": plan["outputs"] += ["plugin-bundle", "install-instructions"]
     if result["confidence"] < 70: plan["warnings"].append("Low detection confidence; explicit configuration is recommended.")
 
     encoded = json.dumps(plan, ensure_ascii=False, indent=2)
