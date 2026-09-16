@@ -73,4 +73,4 @@ Itens que exigem identidade de assinatura, GitHub Environment protegido, conta M
 
 ## Próximas validações
 
-Validar Android e Docker/Compose em projetos reais; depois MSI/MSIX genérico, lotes, pacotes combinados, extensão Chrome, MCP e plugins. Certificados, publicação em lojas e assinaturas oficiais permanecem dependentes de credenciais externas.
+Validar Android e Docker/Compose em projetos reais; depois MSIX genérico, lotes e pacotes combinados. O MSI genérico x64 já é produzido pela CLI WiX dentro dos jobs Python e .NET, junto ao ZIP portátil. Certificados, publicação em lojas e assinaturas oficiais permanecem dependentes de credenciais externas.

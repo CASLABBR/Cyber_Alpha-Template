@@ -22,6 +22,7 @@ O v4 está ativo em paralelo ao v3. PWA, HTA e Tauri foram validados em execuç�
 ## Empacotadores disponíveis
 
 - `package-windows.ps1`: cria ZIP portátil, manifesto, hashes e iniciador adequado para CLI ou aplicação web. O conteúdo publicado/autocontido deve ser passado como origem; ele não instala dependências no computador do usuário.
+- `package-msi.ps1`: gera MSI x64 a partir da saída autocontida, com upgrade code estável, desinstalação pelo Windows, atalho no Menu Iniciar e hash do instalador. O job instala a CLI WiX de forma explícita; assinatura Authenticode continua opcional e depende do certificado externo.
 - `collect-android.sh`: coleta APKs e AABs produzidos pelo Gradle, aplica nomes contendo produto/versão/variante e gera SHA-256.
 - `package-docker.sh`: valida Compose ou constrói uma imagem OCI, exporta pacote offline compactado e cria iniciadores simples para Docker Desktop.
 - `package-node.sh`: inclui o projeto, dependências de produção, hashes e iniciadores para Windows/Linux.

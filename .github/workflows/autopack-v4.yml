@@ -215,6 +215,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Instalar WiX para MSI
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          Join-Path $env:USERPROFILE '.dotnet\tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Instalar dependencias
         shell: pwsh
         run: |
@@ -253,6 +259,7 @@ jobs:
           BUILD_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           & control/autopack-v4/package-windows.ps1 -SourceDirectory dist -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -ApplicationType cli
+          & control/autopack-v4/package-msi.ps1 -SourceDirectory dist -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -Executable "$($env:PRODUCT_NAME).exe"
 
       - name: Smoke test
         shell: pwsh
@@ -263,7 +270,7 @@ jobs:
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Windows-Portable-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
+          name: Windows-Packages-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
           path: |
             artifacts/**
           if-no-files-found: error
@@ -297,6 +304,11 @@ jobs:
       - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: 8.0.x
+      - name: Instalar WiX para MSI
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          Join-Path $env:USERPROFILE '.dotnet\tools' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Publicar autocontido
         shell: pwsh
         env:
@@ -309,13 +321,17 @@ jobs:
             throw "Projeto .NET invalido ou fora do repositorio"
           }
           dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true "-p:Version=$($env:BUILD_VERSION)" -o package
-      - name: Criar pacote portatil
+      - name: Criar pacotes portatil e MSI
         shell: pwsh
         env:
           PRODUCT_NAME: ${{ needs.plan.outputs.product }}
           BUILD_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           & control/autopack-v4/package-windows.ps1 -SourceDirectory package -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -ApplicationType auto
+          $exe = Get-ChildItem package -Filter *.exe -File -Recurse | Where-Object Name -notmatch '^(unins|setup|install)' | Select-Object -First 1
+          if (-not $exe) { throw 'Executavel .NET nao encontrado para MSI.' }
+          $relative = [IO.Path]::GetRelativePath((Resolve-Path package), $exe.FullName)
+          & control/autopack-v4/package-msi.ps1 -SourceDirectory package -OutputDirectory artifacts -Product $env:PRODUCT_NAME -Version $env:BUILD_VERSION -Executable $relative
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Windows-DotNet-${{ needs.plan.outputs.product }}-${{ needs.plan.outputs.version }}
