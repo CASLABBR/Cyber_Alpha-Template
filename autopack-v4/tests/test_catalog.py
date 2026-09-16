@@ -33,6 +33,16 @@ class CatalogTests(unittest.TestCase):
                 self.assertTrue(item.test_refs)
             self.assertNotEqual(item.status, "verified")
 
+    def test_msi_controls_have_scoped_evidence(self):
+        items = {item.id: item for item in catalog.build_catalog()}
+        for item_id in ("AP-104", "AP-105"):
+            item = items[item_id]
+            self.assertEqual(item.status, "implemented")
+            self.assertIn("package-msi.ps1", item.code_refs)
+            self.assertIn("tests/test_package_msi.ps1", item.test_refs)
+            self.assertIn("MSIX and Inno Setup remain planned", item.requirement)
+        self.assertEqual(items["AP-106"].status, "planned")
+
     def test_implemented_item_requires_evidence(self):
         items = list(catalog.build_catalog())
         planned = next(index for index, item in enumerate(items) if item.status == "planned")

@@ -15,7 +15,7 @@ function Stable-Id([string]$Prefix, [string]$Value) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try { $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value)) }
   finally { $sha.Dispose() }
-  $hex = ([Convert]::ToHexString($hash)).Substring(0, 20)
+  $hex = ([BitConverter]::ToString($hash).Replace('-', '')).Substring(0, 20)
   return "$Prefix$hex"
 }
 function Stable-Guid([string]$Value) {

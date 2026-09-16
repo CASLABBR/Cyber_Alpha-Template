@@ -64,3 +64,9 @@ jobs:
             $errors += $parseErrors
           }
           if ($errors.Count) { $errors | Format-List; throw 'Scripts PowerShell invalidos.' }
+      - name: Testar geracao MSI no Windows PowerShell 5.1
+        shell: powershell
+        run: ./autopack-v4/tests/test_package_msi.ps1
+      - name: Testar geracao MSI no PowerShell moderno
+        shell: pwsh
+        run: ./autopack-v4/tests/test_package_msi.ps1

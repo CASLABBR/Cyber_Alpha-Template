@@ -86,6 +86,8 @@ IMPLEMENTED: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "AP-011": (("autopack/engine.py",), ("tests/test_engine.py",)),
     "AP-012": (("autopack/engine.py",), ("tests/test_engine.py",)),
     "AP-017": (("autopack/engine.py",), ("tests/test_engine.py",)),
+    "AP-104": (("package-msi.ps1", ".github/workflows/autopack-v4.yml"), ("tests/test_package_msi.ps1",)),
+    "AP-105": (("package-msi.ps1",), ("tests/test_package_msi.ps1",)),
     "AP-201": (("autopack/engine.py",), ("tests/test_engine.py",)),
     "AP-203": (("autopack/package-extension.py",), ("tests/test_package_extension.py",)),
     "AP-204": (("autopack/package-extension.py", ".github/workflows/autopack-v4.yml"), ("tests/test_package_extension.py",)),
@@ -126,6 +128,12 @@ def build_catalog() -> tuple[Item, ...]:
             code_refs, test_refs = IMPLEMENTED.get(item_id, ((), ()))
             external = EXTERNAL_BLOCKED.get(item_id, ())
             status = "implemented" if item_id in IMPLEMENTED else "external-blocked" if external else "planned"
+            if item_id == "AP-104":
+                requirement = "Generate the Windows MSI WiX definition from a self-contained payload and invoke WiX x64; MSIX and Inno Setup remain planned."
+                acceptance = "The Windows PowerShell 5.1 and modern PowerShell fixture checks nested payloads, stable IDs, XML escaping and WiX invocation using a stub."
+            elif item_id == "AP-105":
+                requirement = "Name the Windows MSI artifact by product/version and emit its SHA256 sidecar; MSIX and Inno Setup remain planned."
+                acceptance = "The fixture checks the MSI output and checksum sidecar; actual installability is validated separately by real builds."
             items.append(Item(item_id, epic, control, requirement.format(epic=epic), status,
                               (acceptance,), code_refs, test_refs, (), dependencies, external))
     return tuple(items)
