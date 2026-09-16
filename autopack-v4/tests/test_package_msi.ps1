@@ -30,6 +30,8 @@ $global:LASTEXITCODE = 0
   Assert (@($files | Where-Object Id -eq $expected).Count -eq 1) 'Stable file ID changed'
   $hash = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash.ToLowerInvariant()
   Assert ((Get-Content -LiteralPath "$msi.sha256" -Raw).Trim() -eq "$hash  $([IO.Path]::GetFileName($msi))") 'Invalid checksum sidecar'
+  $shortcut = $xml.SelectSingleNode('//*[local-name()="Shortcut"]')
+  Assert ($shortcut.Target -eq "[#$expected]") 'Shortcut must reference the installed file ID'
   $first = $xml.OuterXml
   & $script @params | Out-Null
   [xml]$again = Get-Content -LiteralPath "$msi.xml" -Raw

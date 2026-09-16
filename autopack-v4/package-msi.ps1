@@ -75,7 +75,7 @@ function Add-DirectoryContent([IO.DirectoryInfo]$Directory, [string]$Indent, [st
 Add-DirectoryContent ([IO.DirectoryInfo]$source) '        ' ''
 $shortcutComponent = 'cmpShortcut'
 $componentRefs.Add($shortcutComponent)
-$target = "[INSTALLFOLDER]$($executableRelative.Replace('/', '\'))"
+$target = "[#$(Stable-Id 'fil' $executableRelative)]"
 $lines.Add('        <Component Id="cmpShortcut" Guid="*">')
 $lines.Add("          <Shortcut Id=`"StartMenuShortcut`" Directory=`"ProgramMenuFolder`" Name=`"$(Escape-Xml $safeProduct)`" Target=`"$(Escape-Xml $target)`" WorkingDirectory=`"INSTALLFOLDER`" />")
 $lines.Add("          <RegistryValue Root=`"HKCU`" Key=`"Software\\$(Escape-Xml $Manufacturer)\\$(Escape-Xml $safeProduct)`" Name=`"Installed`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`" />")
