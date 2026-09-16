@@ -28,9 +28,9 @@ jobs:
       - name: Testar motor
         run: python -m unittest discover -s autopack-v4/tests -v
       - name: Validar os 600 controles rastreaveis
-        run: python autopack-v4/autopack/catalog.py --check
+        run: python autopack-v4/catalog.py --check
       - name: Validar scripts shell
-        run: bash -n autopack-v4/autopack/*.sh
+        run: bash -n autopack-v4/*.sh
       - name: Validar YAML dos workflows
         run: |
           python -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
@@ -55,7 +55,7 @@ jobs:
         shell: pwsh
         run: |
           $errors = @()
-          $scripts = @(Get-ChildItem autopack-v4/autopack -Filter *.ps1 -File -Recurse)
+          $scripts = @(Get-ChildItem autopack-v4 -Filter *.ps1 -File -Recurse)
           if (-not $scripts.Count) { throw 'Nenhum script PowerShell encontrado para validar.' }
           $scripts | ForEach-Object {
             $tokens = $null

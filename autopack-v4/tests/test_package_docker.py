@@ -78,7 +78,7 @@ else:
         environment["FAKE_COMPOSE_IMAGES"] = json.dumps([
             {"Service": "web", "Repository": "demo/web", "Tag": "1.0", "ID": "sha256:abc123"}
         ])
-        environment["AUTOPACK_DOCKER_BIN"] = str(self.bin / "docker.cmd")
+        environment["AUTOPACK_DOCKER_BIN"] = str(self.bin / ("docker.cmd" if os.name == "nt" else "docker"))
         def bash_path(path):
             value = Path(path).resolve().as_posix()
             if os.name == "nt" and len(value) > 2 and value[1] == ":":
