@@ -38,3 +38,11 @@ O CI em `.github/workflows/autopack-v4-ci.yml` testa o motor, valida a sintaxe d
 Consulte `docs/DOSSIE-AUTOPACK.md` e `docs/CATALOGO-600-MELHORIAS.md` para arquitetura, comandos, decisões e backlog.
 
 Os scripts recusam saídas vazias. MSI/MSIX e APK/AAB assinados só devem ser anunciados quando o job possuir certificado/keystore em GitHub Secrets; sem credenciais, a saída é de teste ou portátil. A leitura de README serve para relatório e sugestão, nunca para executar comandos arbitrários.
+
+## Validacao do ciclo MSI
+
+O job `msi-lifecycle` de `.github/workflows/autopack-v4-ci.yml` usa WiX 4.0.5 real e Windows PowerShell 5.1 em um runner Windows descartavel. O teste `tests/test_msi_lifecycle.ps1` compila uma aplicacao C#, gera dois instaladores e verifica instalacao, execucao, atualizacao 1.0.0 -> 1.1.0, reparo do executavel removido e desinstalacao. Tambem confere SHA256, conteudo instalado, destino do atalho e limpeza de arquivos, atalho e registro.
+
+Evidencia aprovada: [CI 35110046882, commit 0b398eb](https://github.com/CASLABBR/Cyber_Alpha-Template/actions/runs/35110046882). Os MSI de teste, checksums e logs do Windows Installer ficam no artefato `MSI-lifecycle-35110046882`. A fixture valida MSI x64 sem assinatura; nao comprova assinatura, MSIX, Inno Setup ou todas as aplicacoes de terceiros. O teste recusa execucao fora de runners GitHub-hosted.
+
+O teste rapido `tests/test_package_msi.ps1` continua usando WiX simulado e roda tanto em Windows PowerShell 5.1 quanto em PowerShell moderno para detectar regressoes na geracao da definicao WiX.
